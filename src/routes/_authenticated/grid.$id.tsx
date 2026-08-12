@@ -134,10 +134,7 @@ function GridPage() {
         filter: numeric ? "agNumberColumnFilter" : categorical ? SetFilter : "agTextColumnFilter",
       };
       if (numeric) def.type = "numericColumn";
-      if (i === 0) {
-        def.checkboxSelection = true;
-        def.headerCheckboxSelection = true;
-      }
+      if (i === 0) def.minWidth = 180;
       return def;
     });
   }, [dataset, rows]);
