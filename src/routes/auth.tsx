@@ -58,17 +58,6 @@ function AuthPage() {
     }
   };
 
-  const google = async () => {
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
-    });
-    if (result.error) {
-      toast.error("Google sign-in failed");
-      return;
-    }
-    if (result.redirected) return;
-    void navigate({ to: "/vault" });
-  };
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface px-4">
