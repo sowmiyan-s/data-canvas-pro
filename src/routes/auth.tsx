@@ -61,12 +61,12 @@ function AuthPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface px-4">
       <div className="panel w-full max-w-sm p-7">
-        <Link to="/" className="mb-6 flex items-center gap-2">
+        <div className="mb-6 flex items-center gap-2">
           <span className="grid size-8 place-items-center rounded-md bg-primary text-primary-foreground">
             <Sheet className="size-4" />
           </span>
           <span className="font-semibold tracking-tight">GridVault</span>
-        </Link>
+        </div>
         <h1 className="text-xl font-semibold">
           {mode === "signin" ? "Sign in" : "Create your workspace"}
         </h1>
