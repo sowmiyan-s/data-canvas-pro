@@ -12,7 +12,6 @@ import {
 import {
   ArrowLeft,
   Search,
-  ShoppingBasket,
   Save,
   FilterX,
   Download,
@@ -20,6 +19,10 @@ import {
   Trash2,
   CircleDot,
   CheckCircle2,
+  Heading,
+  Eye,
+  Pencil,
+  ListFilter,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/AppHeader";
@@ -28,14 +31,31 @@ import { ExportDialog } from "@/components/ExportDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { supabase } from "@/integrations/supabase/client";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   ROW_ID,
+  applyHeaderRow,
   distinctCount,
   getDataset,
   isNumericColumn,
   loadWorkingRows,
+  overwriteOriginal,
   saveWorkingRows,
   type Dataset,
   type Row,
@@ -56,6 +76,8 @@ const gridTheme = themeQuartz.withParams({
   spacing: 6,
 });
 
+type Mode = "edit" | "filter";
+
 export const Route = createFileRoute("/_authenticated/grid/$id")({
   head: () => ({
     meta: [
@@ -63,13 +85,15 @@ export const Route = createFileRoute("/_authenticated/grid/$id")({
       {
         name: "description",
         content:
-          "Edit cells, apply Excel-style set and numeric filters, stage rows in the selection basket and export custom sheets.",
+          "Edit cells and delete rows in the edit section, set any row as the header row, or filter, select, preview and export rows.",
       },
       { property: "og:title", content: "Grid workspace — GridVault" },
       {
         property: "og:description",
-        content: "High-performance spreadsheet grid with filter-aware selection and custom exports.",
+        content: "Edit, filter, select, preview and export spreadsheet rows in one workspace.",
       },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: GridPage,
@@ -83,25 +107,17 @@ function GridPage() {
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState<Mode>("edit");
   const [quickFilter, setQuickFilter] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [filterActive, setFilterActive] = useState(false);
   const [visibleCount, setVisibleCount] = useState(0);
-  const [selectedCount, setSelectedCount] = useState(0);
-  const [basket, setBasket] = useState<{ id: string; row_key: string; row_data: Row }[]>([]);
-  const [basketOpen, setBasketOpen] = useState(false);
+  const [selected, setSelected] = useState<Row[]>([]);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-
-  const loadBasket = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("basket_items")
-      .select("id, row_key, row_data")
-      .eq("dataset_id", id)
-      .order("created_at", { ascending: true });
-    if (error) return;
-    setBasket((data ?? []) as unknown as { id: string; row_key: string; row_data: Row }[]);
-  }, [id]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmHeader, setConfirmHeader] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -109,14 +125,15 @@ function GridPage() {
         const ds = await getDataset(id);
         setDataset(ds);
         setRows(await loadWorkingRows(ds));
-        await loadBasket();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Could not open dataset");
       } finally {
         setLoading(false);
       }
     })();
-  }, [id, loadBasket]);
+  }, [id]);
+
+  const columns = dataset?.columns ?? [];
 
   const columnDefs = useMemo<ColDef<Row>[]>(() => {
     if (!dataset) return [];
@@ -126,24 +143,31 @@ function GridPage() {
       const def: ColDef<Row> = {
         field: col,
         headerName: col,
-        editable: true,
+        editable: mode === "edit",
         sortable: true,
         resizable: true,
         minWidth: 130,
         flex: 1,
-        filter: numeric ? "agNumberColumnFilter" : categorical ? SetFilter : "agTextColumnFilter",
+        filter:
+          mode === "filter"
+            ? numeric
+              ? "agNumberColumnFilter"
+              : categorical
+                ? SetFilter
+                : "agTextColumnFilter"
+            : false,
       };
       if (numeric) def.type = "numericColumn";
       if (i === 0) def.minWidth = 180;
       return def;
     });
-  }, [dataset, rows]);
+  }, [dataset, rows, mode]);
 
   const refreshStatus = useCallback(() => {
     const api = apiRef.current;
     if (!api) return;
     setVisibleCount(api.getDisplayedRowCount());
-    setSelectedCount(api.getSelectedRows().length);
+    setSelected(api.getSelectedRows());
     setFilterActive(api.isAnyFilterPresent());
   }, []);
 
@@ -152,30 +176,37 @@ function GridPage() {
     refreshStatus();
   };
 
-  const saveToSource = useCallback(async () => {
-    if (!dataset) return;
-    setSaving(true);
-    try {
-      await saveWorkingRows(dataset, rows);
-      setDirty(false);
-      toast.success("Saved to working dataset — original file untouched");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  }, [dataset, rows]);
+  const persist = useCallback(
+    async (nextRows: Row[], nextColumns: string[]) => {
+      if (!dataset) return;
+      setSaving(true);
+      try {
+        await saveWorkingRows(dataset, nextRows);
+        await overwriteOriginal(dataset, nextRows, nextColumns);
+        setDataset({ ...dataset, columns: nextColumns, row_count: nextRows.length });
+        setDirty(false);
+        toast.success("Saved — the stored spreadsheet was overwritten");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Save failed");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [dataset],
+  );
+
+  const save = useCallback(() => void persist(rows, columns), [persist, rows, columns]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        void saveToSource();
+        save();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [saveToSource]);
+  }, [save]);
 
   const filteredRows = useCallback(() => {
     const api = apiRef.current;
@@ -185,42 +216,32 @@ function GridPage() {
     return out;
   }, [rows]);
 
-  const addToBasket = async () => {
-    const api = apiRef.current;
-    if (!api) return;
-    const selected = api.getSelectedRows();
-    if (selected.length === 0) {
-      toast.error("Select rows first");
-      return;
-    }
-    const { data: auth } = await supabase.auth.getUser();
-    const payload = selected.map((r) => ({
-      user_id: auth.user!.id,
-      dataset_id: id,
-      row_key: String(r[ROW_ID]),
-      row_data: r as never,
-    }));
-    const { error } = await supabase
-      .from("basket_items")
-      .upsert(payload, { onConflict: "dataset_id,row_key" });
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-    await loadBasket();
-    api.deselectAll();
-    refreshStatus();
-    toast.success(`${selected.length} rows staged in the basket`);
+  const deleteSelected = () => {
+    const ids = new Set(selected.map((r) => String(r[ROW_ID])));
+    const next = rows.filter((r) => !ids.has(String(r[ROW_ID])));
+    setRows(next);
+    setSelected([]);
+    setDirty(true);
+    setConfirmDelete(false);
+    toast.success(`${ids.size} row${ids.size === 1 ? "" : "s"} deleted — press Save to persist`);
   };
 
-  const removeBasketItem = async (itemId: string) => {
-    await supabase.from("basket_items").delete().eq("id", itemId);
-    setBasket((b) => b.filter((x) => x.id !== itemId));
-  };
-
-  const clearBasket = async () => {
-    await supabase.from("basket_items").delete().eq("dataset_id", id);
-    setBasket([]);
+  const setAsHeader = () => {
+    const target = selected[0];
+    if (!target) return;
+    try {
+      const next = applyHeaderRow(rows, columns, String(target[ROW_ID]));
+      setRows(next.rows);
+      if (dataset) setDataset({ ...dataset, columns: next.columns });
+      setSelected([]);
+      setDirty(true);
+      apiRef.current?.setFilterModel(null);
+      toast.success("Header row applied — press Save to persist");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not set header row");
+    } finally {
+      setConfirmHeader(false);
+    }
   };
 
   if (loading) {
@@ -244,8 +265,10 @@ function GridPage() {
     );
   }
 
+  const previewCols = columns.slice(0, 12);
+
   return (
-    <div className="flex h-screen flex-col bg-surface">
+    <div className="flex h-screen flex-col overflow-hidden bg-surface">
       <AppHeader>
         <div className="flex items-center gap-3">
           <Link to="/vault" className="text-muted-foreground hover:text-foreground">
@@ -255,7 +278,7 @@ function GridPage() {
           <Badge variant="secondary">{dataset.tag}</Badge>
           {dirty ? (
             <span className="flex items-center gap-1 text-xs text-warning">
-              <CircleDot className="size-3" /> Draft changes
+              <CircleDot className="size-3" /> Unsaved changes
             </span>
           ) : (
             <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -265,66 +288,132 @@ function GridPage() {
         </div>
       </AppHeader>
 
-      <div className="flex flex-wrap items-center gap-2 border-b bg-card px-4 py-2.5">
-        <div className="relative w-72">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={quickFilter}
-            onChange={(e) => setQuickFilter(e.target.value)}
-            placeholder="Search across all columns…"
-            className="h-9 pl-8"
-          />
-        </div>
-
-        <div
-          className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
-            filterActive
-              ? "border-primary/40 bg-accent text-accent-foreground"
-              : "bg-muted/50 text-muted-foreground"
-          }`}
-        >
-          <span className="font-medium tabular">
-            {filterActive ? "Filtered" : "Unfiltered"}: {visibleCount.toLocaleString()} /{" "}
-            {rows.length.toLocaleString()} rows
-          </span>
-          {filterActive && (
-            <button
-              type="button"
-              className="flex items-center gap-1 font-medium hover:underline"
-              onClick={() => {
-                apiRef.current?.setFilterModel(null);
-                setQuickFilter("");
-              }}
-            >
-              <FilterX className="size-3.5" /> Clear
-            </button>
-          )}
-        </div>
-
-        <span className="text-xs text-muted-foreground tabular">{selectedCount} selected</span>
-
-        <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => void addToBasket()}>
-            <ShoppingBasket className="mr-1.5 size-3.5" /> Add to basket
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setBasketOpen(true)}>
-            Basket <span className="ml-1.5 tabular">({basket.length})</span>
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => setExportOpen(true)}>
-            <Download className="mr-1.5 size-3.5" /> Export
-          </Button>
-          <Button size="sm" disabled={!dirty || saving} onClick={() => void saveToSource()}>
-            {saving ? (
-              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-            ) : (
-              <Save className="mr-1.5 size-3.5" />
-            )}
-            Save to source
-          </Button>
-        </div>
+      {/* Section switcher */}
+      <div className="flex items-center gap-2 border-b bg-card px-4 pt-2.5">
+        {(
+          [
+            { key: "edit", label: "Edit database", icon: Pencil },
+            { key: "filter", label: "Filter & export", icon: ListFilter },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => {
+              setMode(t.key);
+              apiRef.current?.setFilterModel(null);
+              setQuickFilter("");
+            }}
+            className={`-mb-px flex items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-2 text-sm font-medium transition-colors ${
+              mode === t.key
+                ? "border-border bg-surface text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <t.icon className="size-3.5" /> {t.label}
+          </button>
+        ))}
       </div>
 
-      <div className="min-h-0 flex-1 p-3">
+      {/* Section toolbar */}
+      <div className="flex flex-wrap items-center gap-2 border-b bg-card px-4 py-2.5">
+        {mode === "edit" ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Double-click a cell to edit. Ctrl+Z / Ctrl+Y undo & redo, Ctrl+S saves and overwrites
+              the stored spreadsheet.
+            </p>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs text-muted-foreground tabular">
+                {selected.length} selected
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={selected.length !== 1}
+                onClick={() => setConfirmHeader(true)}
+              >
+                <Heading className="mr-1.5 size-3.5" /> Set row as header
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive"
+                disabled={selected.length === 0}
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="mr-1.5 size-3.5" /> Delete rows
+              </Button>
+              <Button size="sm" disabled={!dirty || saving} onClick={save}>
+                {saving ? (
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                ) : (
+                  <Save className="mr-1.5 size-3.5" />
+                )}
+                Save to file
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="relative w-72">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={quickFilter}
+                onChange={(e) => setQuickFilter(e.target.value)}
+                placeholder="Search across all columns…"
+                className="h-9 pl-8"
+              />
+            </div>
+
+            <div
+              className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
+                filterActive || quickFilter
+                  ? "border-primary/40 bg-accent text-accent-foreground"
+                  : "bg-muted/50 text-muted-foreground"
+              }`}
+            >
+              <span className="font-medium tabular">
+                {filterActive || quickFilter ? "Filtered" : "Unfiltered"}:{" "}
+                {visibleCount.toLocaleString()} / {rows.length.toLocaleString()} rows
+              </span>
+              {(filterActive || quickFilter) && (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 font-medium hover:underline"
+                  onClick={() => {
+                    apiRef.current?.setFilterModel(null);
+                    setQuickFilter("");
+                  }}
+                >
+                  <FilterX className="size-3.5" /> Clear
+                </button>
+              )}
+            </div>
+
+            <span className="text-xs font-medium text-primary tabular">
+              {selected.length} rows selected
+            </span>
+
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={selected.length === 0}
+                onClick={() => setPreviewOpen(true)}
+              >
+                <Eye className="mr-1.5 size-3.5" /> Preview selected
+              </Button>
+              <Button size="sm" onClick={() => setExportOpen(true)}>
+                <Download className="mr-1.5 size-3.5" /> Export
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Only this section scrolls */}
+      <div className="min-h-0 flex-1 overflow-hidden p-3">
         <div className="h-full overflow-hidden rounded-lg border bg-card">
           <AgGridReact<Row>
             ref={gridRef}
@@ -332,13 +421,12 @@ function GridPage() {
             rowData={rows}
             columnDefs={columnDefs}
             getRowId={(p) => String(p.data[ROW_ID])}
-            quickFilterText={quickFilter}
+            quickFilterText={mode === "filter" ? quickFilter : ""}
             rowSelection={{
               mode: "multiRow",
               selectAll: "filtered",
               enableClickSelection: false,
             }}
-            
             undoRedoCellEditing
             undoRedoCellEditingLimit={100}
             stopEditingWhenCellsLoseFocus
@@ -346,7 +434,6 @@ function GridPage() {
             enterNavigatesVerticallyAfterEdit
             animateRows={false}
             rowBuffer={20}
-            suppressColumnVirtualisation={false}
             onGridReady={onGridReady}
             onCellValueChanged={(e) => {
               setDirty(true);
@@ -360,75 +447,82 @@ function GridPage() {
         </div>
       </div>
 
-      <Sheet open={basketOpen} onOpenChange={setBasketOpen}>
-        <SheetContent className="flex w-full flex-col sm:max-w-lg">
-          <SheetHeader>
-            <SheetTitle>Selection basket — {basket.length} staged rows</SheetTitle>
-          </SheetHeader>
-          <p className="text-xs text-muted-foreground">
-            Staged rows persist across filter changes. Filter, select, stage, repeat.
-          </p>
-          <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-            {basket.map((item) => {
-              const first = dataset.columns.slice(0, 3);
-              return (
-                <div
-                  key={item.id}
-                  className="flex items-start gap-2 rounded-md border bg-card px-3 py-2 text-xs"
-                >
-                  <div className="min-w-0 flex-1">
-                    {first.map((c) => (
-                      <div key={c} className="truncate">
-                        <span className="text-muted-foreground">{c}: </span>
-                        {String(item.row_data[c] ?? "")}
-                      </div>
+      {/* Selected rows preview */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="flex max-h-[85vh] max-w-5xl flex-col overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Selected rows — {selected.length}</DialogTitle>
+            <DialogDescription>
+              Selections are kept when you change filters, so you can select across several filter
+              passes before exporting.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto rounded-lg border">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-muted/90">
+                <tr>
+                  {previewCols.map((c) => (
+                    <th key={c} className="whitespace-nowrap px-3 py-2 text-left font-semibold">
+                      {c}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {selected.map((r) => (
+                  <tr key={String(r[ROW_ID])} className="border-t">
+                    {previewCols.map((c) => (
+                      <td key={c} className="whitespace-nowrap px-3 py-1.5 tabular">
+                        {String(r[c] ?? "")}
+                      </td>
                     ))}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void removeBasketItem(item.id)}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </div>
-              );
-            })}
-            {basket.length === 0 && (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                Nothing staged yet. Select rows in the grid and click “Add to basket”.
-              </p>
-            )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <div className="flex gap-2 border-t pt-3">
-            <Button
-              variant="outline"
-              className="flex-1"
-              disabled={basket.length === 0}
-              onClick={() => void clearBasket()}
-            >
-              Clear basket
-            </Button>
-            <Button
-              className="flex-1"
-              onClick={() => {
-                setBasketOpen(false);
-                setExportOpen(true);
-              }}
-            >
-              <Download className="mr-1.5 size-4" /> Export basket
-            </Button>
-          </div>
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selected.length} row(s)?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The rows are removed from the grid. Press “Save to file” afterwards to write the change
+              to the stored spreadsheet.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={deleteSelected}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmHeader} onOpenChange={setConfirmHeader}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use this row as the column names?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The selected row's values become the column headers, and that row plus every row above
+              it is removed. Press “Save to file” afterwards to persist.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={setAsHeader}>Set as header</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ExportDialog
         open={exportOpen}
         onOpenChange={setExportOpen}
         datasetName={dataset.name}
-        columns={dataset.columns}
+        columns={columns}
         filteredRows={filteredRows()}
-        basketRows={basket.map((b) => b.row_data)}
+        selectedRows={selected}
       />
     </div>
   );
