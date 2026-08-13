@@ -143,6 +143,48 @@ export async function saveWorkingRows(ds: Dataset, rows: Row[]) {
   if (error) throw error;
 }
 
+/**
+ * Uses the values of `headerRid` as the new column names and drops that row
+ * plus every row above it.
+ */
+export function applyHeaderRow(rows: Row[], columns: string[], headerRid: string): ParsedSheet {
+  const index = rows.findIndex((r) => r[ROW_ID] === headerRid);
+  if (index < 0) throw new Error("Header row not found");
+  const headerRow = rows[index]!;
+  const used = new Set<string>();
+  const mapping = columns.map((col) => {
+    let name = String(headerRow[col] ?? "").trim() || col;
+    let n = 2;
+    while (used.has(name)) name = `${name} (${n++})`;
+    used.add(name);
+    return { from: col, to: name };
+  });
+  const nextRows = rows.slice(index + 1).map((r, i) => {
+    const out: Record<string, unknown> = { [ROW_ID]: `r${i + 1}` };
+    for (const m of mapping) out[m.to] = r[m.from] ?? "";
+    return out as Row;
+  });
+  return { columns: mapping.map((m) => m.to), rows: nextRows };
+}
+
+/** Overwrites the stored original spreadsheet with the current working data. */
+export async function overwriteOriginal(ds: Dataset, rows: Row[], columns: string[]) {
+  const aoa = [columns, ...rows.map((r) => columns.map((c) => r[c] ?? ""))];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+  const out = XLSX.write(wb, { bookType: "xlsx", type: "array" }) as ArrayBuffer;
+  const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const path = ds.original_path ?? `${ds.user_id}/${ds.id}/original.xlsx`;
+  const { error } = await supabase.storage
+    .from("datasets")
+    .upload(path, new Blob([out], { type: mime }), { upsert: true, contentType: mime });
+  if (error) throw error;
+  if (!ds.original_path) {
+    await supabase.from("datasets").update({ original_path: path }).eq("id", ds.id);
+  }
+}
+
 export async function renameDataset(id: string, name: string, tag?: string) {
   const { error } = await supabase
     .from("datasets")
