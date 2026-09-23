@@ -3,22 +3,22 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "GridVault — Spreadsheet Vault, Editor & Export" },
+      { title: "GridVault — Spreadsheet Projects" },
       {
         name: "description",
         content:
-          "Upload spreadsheets, edit rows in place, set any row as the header row, filter and select rows, then export a custom Excel file.",
+          "Manage spreadsheet projects, edit source data, and export customized Excel files.",
       },
-      { property: "og:title", content: "GridVault — Spreadsheet Vault, Editor & Export" },
+      { property: "og:title", content: "GridVault — Spreadsheet Projects" },
       {
         property: "og:description",
-        content: "Edit, filter, select and export spreadsheet data without corrupting your data.",
+        content: "Edit, filter, select and export spreadsheet data securely.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
   }),
   beforeLoad: () => {
-    throw redirect({ to: "/vault" });
+    throw redirect({ to: "/auth" });
   },
 });
