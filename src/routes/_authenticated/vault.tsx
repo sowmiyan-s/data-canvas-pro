@@ -10,6 +10,9 @@ import {
   TableProperties,
   FileDown,
   Loader2,
+  Plus,
+  FileSpreadsheet,
+  Clock3,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppHeader } from "@/components/AppHeader";
@@ -42,6 +45,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   createDataset,
+  createEmptyDataset,
   deleteDataset,
   downloadOriginal,
   duplicateDataset,
@@ -64,6 +68,8 @@ export const Route = createFileRoute("/_authenticated/vault")({
         property: "og:description",
         content: "Manage your spreadsheet library: search, rename, duplicate and open in grid view.",
       },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: VaultPage,
@@ -80,6 +86,9 @@ function VaultPage() {
   const [toRename, setToRename] = useState<Dataset | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [tagValue, setTagValue] = useState("");
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -124,15 +133,17 @@ function VaultPage() {
   return (
     <div className="min-h-screen bg-surface">
       <AppHeader />
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main className="mx-auto max-w-6xl px-4 py-6 sm:py-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold">File vault</h1>
+            <p className="flex items-center gap-1.5 text-xs font-semibold uppercase text-primary"><Clock3 className="size-3.5" /> Your workspace</p>
+            <h1 className="mt-1 text-2xl font-semibold">Recent projects</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Every upload keeps an immutable original plus an editable working dataset.
+              Pick up where you left off, or start with a new spreadsheet.
             </p>
           </div>
-          <div className="relative w-64">
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <div className="relative min-w-0 sm:w-64">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
@@ -140,6 +151,8 @@ function VaultPage() {
               placeholder="Search files or tags"
               className="pl-8"
             />
+          </div>
+          <Button onClick={() => { setNewProjectName(""); setNewProjectOpen(true); }}><Plus className="mr-1.5 size-4" /> New project</Button>
           </div>
         </div>
 
@@ -155,7 +168,7 @@ function VaultPage() {
             void handleFiles(e.dataTransfer.files);
           }}
           onClick={() => inputRef.current?.click()}
-          className={`mt-6 cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition-colors ${
+          className={`mt-5 cursor-pointer rounded-lg border-2 border-dashed p-6 text-center transition-colors sm:p-8 ${
             dragging ? "border-primary bg-accent/60" : "border-border bg-card hover:bg-muted/50"
           }`}
         >
