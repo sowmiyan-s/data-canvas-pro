@@ -107,6 +107,30 @@ export async function createDataset(file: File): Promise<Dataset> {
   return updated as unknown as Dataset;
 }
 
+export async function createEmptyDataset(name: string): Promise<Dataset> {
+  const { data: auth } = await supabase.auth.getUser();
+  const uid = auth.user?.id;
+  if (!uid) throw new Error("Not signed in");
+
+  const { data: inserted, error } = await supabase
+    .from("datasets")
+    .insert({ user_id: uid, name: name.trim() || "Untitled project", tag: "Uncategorized", row_count: 0, columns: [] })
+    .select()
+    .single();
+  if (error) throw error;
+
+  const workingPath = `${uid}/${inserted.id}/working.json`;
+  await uploadJson(workingPath, []);
+  const { data: updated, error: updateError } = await supabase
+    .from("datasets")
+    .update({ working_path: workingPath })
+    .eq("id", inserted.id)
+    .select()
+    .single();
+  if (updateError) throw updateError;
+  return updated as unknown as Dataset;
+}
+
 export async function listDatasets(): Promise<Dataset[]> {
   const { data, error } = await supabase
     .from("datasets")
@@ -130,15 +154,12 @@ export async function loadWorkingRows(ds: Dataset): Promise<Row[]> {
   return JSON.parse(text) as Row[];
 }
 
-export async function saveWorkingRows(ds: Dataset, rows: Row[]) {
-  const columns: string[] = [];
-  for (const r of rows) {
-    for (const k of Object.keys(r)) if (k !== ROW_ID && !columns.includes(k)) columns.push(k);
-  }
+export async function saveWorkingRows(ds: Dataset, rows: Row[], columns?: string[]) {
+  const nextColumns = columns ?? [...new Set(rows.flatMap((r) => Object.keys(r).filter((k) => k !== ROW_ID)))];
   await uploadJson(ds.working_path ?? `${ds.user_id}/${ds.id}/working.json`, rows);
   const { error } = await supabase
     .from("datasets")
-    .update({ row_count: rows.length, columns })
+    .update({ row_count: rows.length, columns: nextColumns })
     .eq("id", ds.id);
   if (error) throw error;
 }
